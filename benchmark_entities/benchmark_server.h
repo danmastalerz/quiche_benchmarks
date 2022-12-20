@@ -41,7 +41,9 @@ namespace benchmark {
                 .ai_protocol = IPPROTO_UDP
         };
 
-        if (getaddrinfo("127.0.0.1", reinterpret_cast<const char *>(server_port), &hints, &local) != 0) {
+
+        std::string server_port_string = std::to_string(server_port);
+        if (getaddrinfo("127.0.0.1", server_port_string.c_str(), &hints, &local) != 0) {
             std::runtime_error("Could not get address info.");
         }
 
@@ -71,8 +73,8 @@ namespace benchmark {
             std::runtime_error("Could not create quiche config.");
         }
 
-//        quiche_config_load_cert_chain_from_pem_file(config, "./cert.crt");
-//        quiche_config_load_priv_key_from_pem_file(config, "./cert.key");
+        quiche_config_load_cert_chain_from_pem_file(config, "./cert.crt");
+        quiche_config_load_priv_key_from_pem_file(config, "./cert.key");
 
         quiche_config_set_application_protos(config,
                                              (uint8_t *) "\x0ahq-interop\x05hq-29\x05hq-28\x05hq-27\x08http/0.9", 38);

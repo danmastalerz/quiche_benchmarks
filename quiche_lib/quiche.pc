@@ -1,0 +1,11 @@
+# quiche
+
+includedir=/Users/daniel/Desktop/zpp/quiche/quiche/include
+libdir=/Users/daniel/Desktop/zpp/quiche/target/debug
+
+Name: quiche
+Description: quiche library
+URL: https://github.com/cloudflare/quiche
+Version: 0.16.0
+Libs: -Wl,-rpath,${libdir} -L${libdir} -lquiche
+Cflags: -I${includedir}

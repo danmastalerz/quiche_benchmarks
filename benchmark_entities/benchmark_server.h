@@ -15,7 +15,7 @@
 #include <csignal>
 
 #define LOCAL_CONN_ID_LEN 16
-#define MAX_DATAGRAM_SIZE 1350
+#define MAX_DATAGRAM_SIZE 65000
 #define MAX_UDP_DATAGRAM_SIZE 65535
 #define MAX_TOKEN_LEN \
     sizeof("quiche") - 1 + \
@@ -151,9 +151,18 @@ namespace benchmark {
                 if (!process_packet()) {
                     continue;
                 }
+            } else {
+                // Timeout situation
+                std::cout << "There was a timeout. \n";
+                quiche_conn_on_timeout(conn);
+                send_out_packets();
+                // TODO: Handle closed connection.
             }
             // Inform about the throughput
             print_current_speed();
+
+            // TODO: Handle closed connection.
+
             // Send out outgoing packets.
             send_out_packets();
         }
@@ -190,12 +199,28 @@ namespace benchmark {
         if (recv_len < 0) {
             throw std::runtime_error("Could not receive packet.");
         }
-        received_bytes += recv_len;
         return true;
     }
 
     void benchmark_server::send_out_packets() {
+        quiche_send_info send_info;
 
+        // While there is something to send - then send.
+        while(true) {
+            ssize_t written = quiche_conn_send(conn, send_buf.data(), send_buf.size(), &send_info);
+
+            if (written == QUICHE_ERR_DONE) {
+                break;
+            }
+
+            if (written < 0) {
+                throw std::runtime_error("Could not create packet to send.");
+            }
+
+            ssize_t sent = sendto(socket_fd, send_buf.data(), written, 0, (struct sockaddr *) &send_info.to, send_info.to_len);
+        }
+
+        current_timeout = quiche_conn_timeout_as_millis(conn);
     }
 
     void benchmark_server::print_current_speed() {
@@ -297,12 +322,43 @@ namespace benchmark {
             if (conn == nullptr) {
                 throw std::runtime_error("Couldn't create connection");
             }
+            std::cout << "Connection accepted.\n";
             connection_created = true;
-
-            return true;
-        } else {
-
         }
+
+        /*
+         * If we are here, that means that the connection has been created.
+         */
+
+        // Feed received UDP data into quiche.
+        quiche_recv_info recv_info = {
+                (struct sockaddr *) &peer_addr,
+                        peer_addr_len,
+                        local->ai_addr,
+                        local->ai_addrlen
+        };
+        ssize_t done = quiche_conn_recv(conn, recv_buf.data(), recv_len, &recv_info);
+        std::cout << "recv: " << done << std::endl;
+        if (done < 0) {
+            throw std::runtime_error("Couldn't process QUIC packets.");
+        }
+
+        // If connection is establised, then we can read the data.
+        if (quiche_conn_is_established(conn)) {
+            // Iterate through readable streams.
+            uint64_t s = 0;
+            bool fin = false;
+            quiche_stream_iter *readable = quiche_conn_readable(conn);
+            while(quiche_stream_iter_next(readable, &s)) {
+                auto received_from_stream = quiche_conn_stream_recv(conn, s, recv_buf.data(), recv_len, &fin);
+                if (recv_len < 0) {
+                    throw std::runtime_error("Could not receive data from the stream.");
+                }
+                received_bytes += recv_len;
+            }
+        }
+
+        return true;
     }
 
     void benchmark_server::mint_token(const uint8_t *dcid, size_t dcid_len, struct sockaddr_storage *addr,

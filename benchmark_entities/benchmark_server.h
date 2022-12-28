@@ -14,9 +14,11 @@
 #include <cstring>
 #include <csignal>
 
+#define DEBUG false
+
 #define LOCAL_CONN_ID_LEN 16
-#define MAX_DATAGRAM_SIZE 65000
-#define MAX_UDP_DATAGRAM_SIZE 65000
+#define MAX_DATAGRAM_SIZE 1350
+#define MAX_UDP_DATAGRAM_SIZE 1350
 #define MAX_TOKEN_LEN \
     sizeof("quiche") - 1 + \
     sizeof(struct sockaddr_storage) + \
@@ -128,10 +130,14 @@ namespace benchmark {
         quiche_config_set_max_send_udp_payload_size(config, MAX_DATAGRAM_SIZE);
         quiche_config_set_initial_max_data(config, 10000000);
         quiche_config_set_initial_max_stream_data_bidi_local(config, 1000000);
+        quiche_config_set_initial_max_stream_data_bidi_remote(config, 1000000);
         quiche_config_set_initial_max_stream_data_uni(config, 1000000);
-        quiche_config_set_initial_max_streams_bidi(config, 100);
-        quiche_config_set_initial_max_streams_uni(config, 100);
+        quiche_config_set_initial_max_streams_bidi(config, 1000);
+        quiche_config_set_initial_max_streams_uni(config, 1000);
         quiche_config_set_disable_active_migration(config, true);
+        quiche_config_set_cc_algorithm(config, QUICHE_CC_RENO);
+        quiche_config_set_max_stream_window(config, MAX_DATAGRAM_SIZE);
+        quiche_config_set_max_connection_window(config, MAX_DATAGRAM_SIZE);
     }
     /*
      * MAIN BENCHMARK LOOP
@@ -147,11 +153,12 @@ namespace benchmark {
             // If we received a packet without a timeout, we process it.
             if (wait_for_event()) {
                 if (!process_packet()) {
+                    if (DEBUG) std::cout << "Not sending, continue.\n";
                     continue;
                 }
             } else {
                 // Timeout situation
-                std::cout << "There was a timeout. \n";
+                if (DEBUG) std::cout << "There was a timeout. \n";
                 quiche_conn_on_timeout(conn);
                 send_out_packets();
                 // TODO: Handle closed connection.
@@ -193,6 +200,8 @@ namespace benchmark {
         recv_len = recvfrom(socket_fd, recv_buf.data(), recv_buf.size(), 0,
                             (struct sockaddr *) &peer_addr, &peer_addr_len);
 
+        if (DEBUG) std::cout << "Received " << recv_len << " bytes.\n";
+
         // It's more of a sanity check - it shouldn't happen.
         if (recv_len < 0) {
             throw std::runtime_error("Could not receive packet.");
@@ -201,6 +210,7 @@ namespace benchmark {
     }
 
     void benchmark_server::send_out_packets() {
+        if (DEBUG) std::cout << "In send_out_packets\n";
         quiche_send_info send_info;
 
         // While there is something to send - then send.
@@ -216,21 +226,19 @@ namespace benchmark {
             }
 
             ssize_t sent = sendto(socket_fd, send_buf.data(), written, 0, (struct sockaddr *) &send_info.to, send_info.to_len);
+            if (DEBUG) std::cout << "Sent " << sent << " bytes.\n";
             if (sent != written) {
                 throw std::runtime_error("Could not send packet.");
             }
         }
 
         current_timeout = (int) quiche_conn_timeout_as_millis(conn);
+        if (DEBUG) std::cout << "Out of send_out_packets\n";
     }
 
     void benchmark_server::print_current_speed() const {
-        // Convert to megabytes
         double received_in_megabytes = (double) received_bytes / (1000.0 * 1000.0);
-        std::cout << "Throughput: " << received_in_megabytes << "\n";
-        //clear the console
-        std::cout << "\033[2J\033[1;1H";
-
+        std::cout << "Received megabytes: " << received_in_megabytes << "MB\n";
     }
 
     // Return false if the caller should continue to the next iteration of the loop.
@@ -281,6 +289,8 @@ namespace benchmark {
                 ssize_t sent = sendto(socket_fd, send_buf.data(), written, 0,
                                       (struct sockaddr *) &peer_addr, peer_addr_len);
 
+                if (DEBUG) std::cout << "Sent " << sent << " bytes.\n";
+
                 if (sent != written) {
                     throw std::runtime_error("Could not send version negotiation packet.");
                 }
@@ -305,6 +315,7 @@ namespace benchmark {
 
                 ssize_t sent = sendto(socket_fd, send_buf.data(), written, 0,
                                       (struct sockaddr *) &peer_addr, peer_addr_len);
+                if (DEBUG) std::cout << "Sent " << sent << " bytes.\n";
                 if (sent != written) {
                     throw std::runtime_error("Could not send retry packet.");
                 }
@@ -324,7 +335,7 @@ namespace benchmark {
             if (conn == nullptr) {
                 throw std::runtime_error("Couldn't create connection");
             }
-            std::cout << "Connection accepted.\n";
+            if (DEBUG) std::cout << "Connection accepted.\n";
             connection_created = true;
         }
 

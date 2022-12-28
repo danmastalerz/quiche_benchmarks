@@ -17,8 +17,8 @@
 #define DEBUG false
 
 #define LOCAL_CONN_ID_LEN 16
-#define MAX_DATAGRAM_SIZE 1350
-#define MAX_UDP_DATAGRAM_SIZE 1350
+#define MAX_DATAGRAM_SIZE 65000
+#define MAX_UDP_DATAGRAM_SIZE 65000
 #define MAX_TOKEN_LEN \
     sizeof("quiche") - 1 + \
     sizeof(struct sockaddr_storage) + \
@@ -355,18 +355,20 @@ namespace benchmark {
             throw std::runtime_error("Couldn't process QUIC packets.");
         }
 
-        // If connection is establised, then we can read the data.
+        // If connection established, send data.
         if (quiche_conn_is_established(conn)) {
-            // Iterate through readable streams.
-            uint64_t s = 0;
-            bool fin = false;
-            quiche_stream_iter *readable = quiche_conn_readable(conn);
-            while(quiche_stream_iter_next(readable, &s)) {
-                auto received_from_stream = quiche_conn_stream_recv(conn, s, recv_buf.data(), recv_len, &fin);
-                if (received_from_stream < 0) {
-                    throw std::runtime_error("Could not receive data from the stream.");
-                }
-                received_bytes += received_from_stream;
+            quiche_conn_stream_send(conn, 1, (uint8_t *) "x", 1, false);
+            if (DEBUG) std::cout << "About to send data via stream\n";
+            auto to_send = quiche_conn_stream_capacity(conn, 1);
+            if (to_send > 60000) {
+                to_send = 60000;
+            }
+            if (to_send < 0) {
+                return true;
+            }
+            if (quiche_conn_stream_send(conn, 1, send_buf.data(),  to_send, false) < 0) {
+                // throw std::runtime_error("Could not send data via stream.");<< s
+                if (DEBUG) std::cout << "Could not send packet via stream" <<  std::endl;
             }
         }
 

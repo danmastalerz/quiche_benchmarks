@@ -17,8 +17,8 @@
 #define DEBUG false
 
 #define LOCAL_CONN_ID_LEN 16
-#define MAX_DATAGRAM_SIZE 1350
-#define MAX_UDP_DATAGRAM_SIZE 1350
+#define MAX_DATAGRAM_SIZE 65000
+#define MAX_UDP_DATAGRAM_SIZE 65000
 #define MAX_TOKEN_LEN \
     sizeof("quiche") - 1 + \
     sizeof(struct sockaddr_storage) + \
@@ -40,11 +40,13 @@ namespace benchmark {
         ssize_t recv_len;
         std::vector<uint8_t> send_buf;
         struct pollfd poll_register{};
+        size_t received_bytes;
 
         bool wait_for_events();
         void process_packet();
         void send_out_packets();
         static uint8_t *gen_cid(uint8_t *c_id, size_t cid_len);
+        void print_current_speed() const;
     public:
         explicit benchmark_client(std::uint16_t server_port);
         [[noreturn]] void run();
@@ -58,7 +60,8 @@ namespace benchmark {
     recv_len(0),
     recv_buf(MAX_UDP_DATAGRAM_SIZE),
     send_buf(MAX_UDP_DATAGRAM_SIZE),
-    local_addr_len(sizeof(sockaddr_storage)){
+    local_addr_len(sizeof(sockaddr_storage)),
+    received_bytes(0) {
         /*
          * UDP RELATED STUFF
          */
@@ -144,11 +147,12 @@ namespace benchmark {
                 process_packet();
             } else {
                 // Timeout - handle it.
-                // TODO
-                if (DEBUG) std::cout << "Timeout.\n";
                 quiche_conn_on_timeout(conn);
                 send_out_packets();
             }
+
+            // Print current goodput
+            print_current_speed();
 
             // Send out outgoing packets.
             send_out_packets();
@@ -252,18 +256,25 @@ namespace benchmark {
             exit(0);
         }
 
-        // If connection established, send data.
+        // If connection is establised, then we can read the data.
         if (quiche_conn_is_established(conn)) {
-            const uint8_t *app_proto;
-            size_t app_proto_len;
-
-            quiche_conn_application_proto(conn, &app_proto, &app_proto_len);
-            if (DEBUG) std::cout << "About to send data via stream\n";
-            if (quiche_conn_stream_send(conn, 4, send_buf.data(), 100, false) < 0) {
-                // throw std::runtime_error("Could not send data via stream.");<< s
-                if (DEBUG) std::cout << "Could not send packet via stream" <<  std::endl;
+            // Iterate through readable streams.
+            uint64_t s = 0;
+            bool fin = false;
+            quiche_stream_iter *readable = quiche_conn_readable(conn);
+            while(quiche_stream_iter_next(readable, &s)) {
+                auto received_from_stream = quiche_conn_stream_recv(conn, s, recv_buf.data(), recv_buf.size(), &fin);
+                if (received_from_stream < 0) {
+                    throw std::runtime_error("Could not receive data from the stream.");
+                }
+                received_bytes += received_from_stream;
             }
         }
+    }
+
+    void benchmark_client::print_current_speed() const {
+        double received_in_megabytes = (double) received_bytes / (1000.0 * 1000.0);
+        std::cout << "Received megabytes: " << received_in_megabytes << "MB\n";
     }
 
 } // benchmark

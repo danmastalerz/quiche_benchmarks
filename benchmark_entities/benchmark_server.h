@@ -46,7 +46,6 @@ namespace benchmark {
         bool wait_for_event();
         bool process_packet();
         void send_out_packets();
-        void print_current_speed() const;
         static void mint_token(const uint8_t *dcid, size_t dcid_len,
                                struct sockaddr_storage *addr, socklen_t addr_len,
                                uint8_t *token, size_t *token_len);
@@ -163,8 +162,6 @@ namespace benchmark {
                 send_out_packets();
                 // TODO: Handle closed connection.
             }
-            // Inform about the throughput
-            print_current_speed();
 
             // TODO: Handle closed connection.
 
@@ -234,11 +231,6 @@ namespace benchmark {
 
         current_timeout = (int) quiche_conn_timeout_as_millis(conn);
         if (DEBUG) std::cout << "Out of send_out_packets\n";
-    }
-
-    void benchmark_server::print_current_speed() const {
-        double received_in_megabytes = (double) received_bytes / (1000.0 * 1000.0);
-        std::cout << "Received megabytes: " << received_in_megabytes << "MB\n";
     }
 
     // Return false if the caller should continue to the next iteration of the loop.

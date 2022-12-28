@@ -13,6 +13,7 @@
 #include <sys/fcntl.h>
 #include <csignal>
 #include <cstring>
+#include <chrono>
 
 #define DEBUG false
 
@@ -41,12 +42,13 @@ namespace benchmark {
         std::vector<uint8_t> send_buf;
         struct pollfd poll_register{};
         size_t received_bytes;
+        size_t received_bytes_between_timestamps;
+        std::chrono::time_point<std::chrono::high_resolution_clock> start_timestamp{};
 
         bool wait_for_events();
         void process_packet();
         void send_out_packets();
         static uint8_t *gen_cid(uint8_t *c_id, size_t cid_len);
-        void print_current_speed() const;
     public:
         explicit benchmark_client(std::uint16_t server_port);
         [[noreturn]] void run();
@@ -61,7 +63,8 @@ namespace benchmark {
     recv_buf(MAX_UDP_DATAGRAM_SIZE),
     send_buf(MAX_UDP_DATAGRAM_SIZE),
     local_addr_len(sizeof(sockaddr_storage)),
-    received_bytes(0) {
+    received_bytes(0),
+    received_bytes_between_timestamps(0){
         /*
          * UDP RELATED STUFF
          */
@@ -150,9 +153,6 @@ namespace benchmark {
                 quiche_conn_on_timeout(conn);
                 send_out_packets();
             }
-
-            // Print current goodput
-            print_current_speed();
 
             // Send out outgoing packets.
             send_out_packets();
@@ -268,13 +268,22 @@ namespace benchmark {
                     throw std::runtime_error("Could not receive data from the stream.");
                 }
                 received_bytes += received_from_stream;
+                received_bytes_between_timestamps += received_from_stream;
+
+                auto now = std::chrono::high_resolution_clock::now();
+                auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_timestamp);
+                // If second passed, then print current speed.
+                if (duration.count() >= 1000) {
+                    auto received_in_megabytes = received_bytes_between_timestamps / 1000000.0;
+                    auto duration_in_seconds = duration.count() / 1000.0;
+                    auto speed = received_in_megabytes / duration_in_seconds;
+                    std::cout << "Speed: " << speed << " MB/s" << std::endl;
+                    start_timestamp = now;
+                    received_bytes_between_timestamps = 0;
+                }
+
             }
         }
-    }
-
-    void benchmark_client::print_current_speed() const {
-        double received_in_megabytes = (double) received_bytes / (1000.0 * 1000.0);
-        std::cout << "Received megabytes: " << received_in_megabytes << "MB\n";
     }
 
 } // benchmark

@@ -16,7 +16,7 @@
 
 #define LOCAL_CONN_ID_LEN 16
 #define MAX_DATAGRAM_SIZE 65000
-#define MAX_UDP_DATAGRAM_SIZE 65535
+#define MAX_UDP_DATAGRAM_SIZE 65000
 #define MAX_TOKEN_LEN \
     sizeof("quiche") - 1 + \
     sizeof(struct sockaddr_storage) + \
@@ -26,9 +26,7 @@ namespace benchmark {
 
     class benchmark_server {
     private:
-        std::uint16_t server_port;
         int socket_fd;
-        uint8_t conn_id[LOCAL_CONN_ID_LEN]{};
         quiche_conn* conn{};
         quiche_config* config{};
         struct addrinfo *local{};
@@ -39,30 +37,29 @@ namespace benchmark {
         std::vector<uint8_t> recv_buf;
         ssize_t recv_len;
         std::vector<uint8_t> send_buf;
-        struct pollfd poll_register;
+        struct pollfd poll_register{};
         size_t received_bytes;
         bool connection_created;
 
         bool wait_for_event();
         bool process_packet();
         void send_out_packets();
-        void print_current_speed();
-        void mint_token(const uint8_t *dcid, size_t dcid_len,
-                        struct sockaddr_storage *addr, socklen_t addr_len,
-                        uint8_t *token, size_t *token_len);
-        bool validate_token(const uint8_t *token, size_t token_len,
-                            struct sockaddr_storage *addr, socklen_t addr_len,
-                            uint8_t *odcid, size_t *odcid_len);
-        uint8_t *gen_cid(uint8_t *cid, size_t cid_len);
+        void print_current_speed() const;
+        static void mint_token(const uint8_t *dcid, size_t dcid_len,
+                               struct sockaddr_storage *addr, socklen_t addr_len,
+                               uint8_t *token, size_t *token_len);
+        static bool validate_token(const uint8_t *token, size_t token_len,
+                                   struct sockaddr_storage *addr, socklen_t addr_len,
+                                   uint8_t *odcid, size_t *odcid_len);
+        static uint8_t *gen_cid(uint8_t *c_id, size_t cid_len);
     public:
-        benchmark_server(std::uint16_t server_port);
+        explicit benchmark_server(std::uint16_t server_port);
 
         [[noreturn]] void run();
 
     };
 
     benchmark_server::benchmark_server(std::uint16_t server_port) :
-            server_port(server_port),
             current_timeout(-1),
             recv_buf(MAX_UDP_DATAGRAM_SIZE),
             send_buf(MAX_UDP_DATAGRAM_SIZE),
@@ -131,9 +128,10 @@ namespace benchmark {
         quiche_config_set_max_send_udp_payload_size(config, MAX_DATAGRAM_SIZE);
         quiche_config_set_initial_max_data(config, 10000000);
         quiche_config_set_initial_max_stream_data_bidi_local(config, 1000000);
-        quiche_config_set_initial_max_stream_data_bidi_remote(config, 1000000);
+        quiche_config_set_initial_max_stream_data_uni(config, 1000000);
         quiche_config_set_initial_max_streams_bidi(config, 100);
-        quiche_config_set_cc_algorithm(config, QUICHE_CC_RENO);
+        quiche_config_set_initial_max_streams_uni(config, 100);
+        quiche_config_set_disable_active_migration(config, true);
     }
     /*
      * MAIN BENCHMARK LOOP
@@ -218,12 +216,15 @@ namespace benchmark {
             }
 
             ssize_t sent = sendto(socket_fd, send_buf.data(), written, 0, (struct sockaddr *) &send_info.to, send_info.to_len);
+            if (sent != written) {
+                throw std::runtime_error("Could not send packet.");
+            }
         }
 
-        current_timeout = quiche_conn_timeout_as_millis(conn);
+        current_timeout = (int) quiche_conn_timeout_as_millis(conn);
     }
 
-    void benchmark_server::print_current_speed() {
+    void benchmark_server::print_current_speed() const {
         // Convert to megabytes
         double received_in_megabytes = (double) received_bytes / (1000.0 * 1000.0);
         std::cout << "Throughput: " << received_in_megabytes << "\n";
@@ -316,6 +317,7 @@ namespace benchmark {
             }
 
             // Now we can create the connection.
+            memcpy(cid, dcid, LOCAL_CONN_ID_LEN);
             conn = quiche_accept(cid, LOCAL_CONN_ID_LEN, odcid, odcid_len, local->ai_addr, local->ai_addrlen,
                                  (struct sockaddr *) &peer_addr, peer_addr_len, config);
 
@@ -333,12 +335,11 @@ namespace benchmark {
         // Feed received UDP data into quiche.
         quiche_recv_info recv_info = {
                 (struct sockaddr *) &peer_addr,
-                        peer_addr_len,
-                        local->ai_addr,
-                        local->ai_addrlen
+                peer_addr_len,
+                local->ai_addr,
+                local->ai_addrlen
         };
         ssize_t done = quiche_conn_recv(conn, recv_buf.data(), recv_len, &recv_info);
-        std::cout << "recv: " << done << std::endl;
         if (done < 0) {
             throw std::runtime_error("Couldn't process QUIC packets.");
         }
@@ -351,10 +352,10 @@ namespace benchmark {
             quiche_stream_iter *readable = quiche_conn_readable(conn);
             while(quiche_stream_iter_next(readable, &s)) {
                 auto received_from_stream = quiche_conn_stream_recv(conn, s, recv_buf.data(), recv_len, &fin);
-                if (recv_len < 0) {
+                if (received_from_stream < 0) {
                     throw std::runtime_error("Could not receive data from the stream.");
                 }
-                received_bytes += recv_len;
+                received_bytes += received_from_stream;
             }
         }
 
@@ -373,14 +374,14 @@ namespace benchmark {
     bool benchmark_server::validate_token(const uint8_t *token, size_t token_len, struct sockaddr_storage *addr,
                                           socklen_t addr_len, uint8_t *odcid, size_t *odcid_len) {
         if ((token_len < sizeof("quiche") - 1) ||
-            memcmp(token, "quiche", sizeof("quiche") - 1)) {
+            memcmp(token, "quiche", sizeof("quiche") - 1) != 0) {
             return false;
         }
 
         token += sizeof("quiche") - 1;
         token_len -= sizeof("quiche") - 1;
 
-        if ((token_len < addr_len) || memcmp(token, addr, addr_len)) {
+        if ((token_len < addr_len) || memcmp(token, addr, addr_len) != 0) {
             return false;
         }
 
@@ -397,18 +398,18 @@ namespace benchmark {
         return true;
     }
 
-    uint8_t *benchmark_server::gen_cid(uint8_t *cid, size_t cid_len) {
+    uint8_t *benchmark_server::gen_cid(uint8_t *c_id, size_t cid_len) {
         int rng = open("/dev/urandom", O_RDONLY);
         if (rng < 0) {
             throw std::runtime_error("Could not open /dev/urandom.");
         }
 
-        ssize_t rand_len = read(rng, cid, cid_len);
+        ssize_t rand_len = read(rng, c_id, cid_len);
         if (rand_len < 0) {
             throw std::runtime_error("Could not create connection id.");
         }
 
-        return cid;
+        return c_id;
     }
 
 } // benchmark

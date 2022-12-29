@@ -15,10 +15,11 @@
 #include <csignal>
 
 #define DEBUG false
+#define VLEN 1000
 
 #define LOCAL_CONN_ID_LEN 16
-#define MAX_DATAGRAM_SIZE 65000
-#define MAX_UDP_DATAGRAM_SIZE 65000
+#define MAX_DATAGRAM_SIZE 1350
+#define MAX_UDP_DATAGRAM_SIZE 1350
 #define MAX_TOKEN_LEN \
     sizeof("quiche") - 1 + \
     sizeof(struct sockaddr_storage) + \
@@ -42,10 +43,10 @@ namespace benchmark {
         struct pollfd poll_register{};
         size_t received_bytes;
         bool connection_created;
-        uint8_t bufs[10][65535]{};
-        ssize_t msg_lens[10]{};
-        struct iovec vecs[10]{};
-        struct mmsghdr msgs[10]{};
+        uint8_t bufs[VLEN][MAX_DATAGRAM_SIZE]{};
+        ssize_t msg_lens[VLEN]{};
+        struct iovec vecs[VLEN]{};
+        struct mmsghdr msgs[VLEN]{};
 
         bool wait_for_event();
         bool process_packet();
@@ -139,8 +140,8 @@ namespace benchmark {
         quiche_config_set_initial_max_streams_uni(config, 1000);
         quiche_config_set_disable_active_migration(config, true);
         quiche_config_set_cc_algorithm(config, QUICHE_CC_RENO);
-        quiche_config_set_max_stream_window(config, MAX_DATAGRAM_SIZE);
-        quiche_config_set_max_connection_window(config, MAX_DATAGRAM_SIZE);
+        quiche_config_set_max_stream_window(config, 65000);
+        quiche_config_set_max_connection_window(config, 65000);
     }
     /*
      * MAIN BENCHMARK LOOP
@@ -225,21 +226,37 @@ namespace benchmark {
                 throw std::runtime_error("Could not create packet to send.");
             }
             msg_lens[packets] = written;
+            vecs[packets].iov_base = bufs[packets];
+            vecs[packets].iov_len = msg_lens[packets];
+            msgs[packets].msg_hdr.msg_iov = &vecs[packets];
+            msgs[packets].msg_hdr.msg_iovlen = 1;
+            msgs[packets].msg_hdr.msg_name = &quiche_send_info.to;
+            msgs[packets].msg_hdr.msg_namelen = quiche_send_info.to_len;
             packets++;
+            if (packets == VLEN) {
+                std::cout << "sending " << packets << " packets\n";
+                // sendmmsg
+                int sent = sendmmsg(socket_fd, msgs, packets, 0);
+
+                if (sent != packets) {
+                    throw std::runtime_error("Couldn't send all packets.");
+                }
+                packets = 0;
+            }
         }
 
-        // init msgs
-        for (int i = 0; i < packets; i++) {
-            vecs[i].iov_base = bufs[i];
-            vecs[i].iov_len = msg_lens[i];
-            msgs[i].msg_hdr.msg_iov = &vecs[i];
-            msgs[i].msg_hdr.msg_iovlen = 1;
-            msgs[i].msg_hdr.msg_name = &quiche_send_info.to;
-            msgs[i].msg_hdr.msg_namelen = quiche_send_info.to_len;
+        if (packets > 0) {
+            // sendmmsg
+            // sleep for 10
+
+
+            int sent = sendmmsg(socket_fd, msgs, packets, 0);
+            std::cout << "sending " << packets << " packets\n";
+            if (sent != packets) {
+                throw std::runtime_error("Couldn't send all packets.");
+            }
         }
 
-        // sendmmsg
-        int sent = sendmmsg(socket_fd, msgs, packets, 0);
     }
 
     // Return false if the caller should continue to the next iteration of the loop.
@@ -353,24 +370,34 @@ namespace benchmark {
         };
         ssize_t done = quiche_conn_recv(conn, recv_buf.data(), recv_len, &recv_info);
         if (done < 0) {
+            std::cout << "ERR=" << done << "\n";
             throw std::runtime_error("Couldn't process QUIC packets.");
         }
 
         // If connection established, send data.
         if (conn != nullptr && quiche_conn_is_established(conn)) {
+            int used_streams = 1000;
             quiche_conn_stream_send(conn, 1, (uint8_t *) "x", 1, false);
             if (DEBUG) std::cout << "About to send data via stream\n";
-            auto to_send = quiche_conn_stream_capacity(conn, 1);
-            if (to_send > 60000) {
-                to_send = 60000;
+            auto to_send = quiche_conn_stream_capacity(conn, 1) / 1000;
+            if (to_send > 1000) {
+                to_send = 1000;
             }
-            if (to_send < 0) {
+            if (to_send <= 0) {
+                used_streams = 0;
+                std::cout << "to_send: " << to_send << "\n";
+                std::cout << "used streams: " << used_streams << "\n";
                 return true;
             }
-            if (quiche_conn_stream_send(conn, 1, send_buf.data(),  to_send, false) < 0) {
-                // throw std::runtime_error("Could not send data via stream.");<< s
-                if (DEBUG) std::cout << "Could not send packet via stream" <<  std::endl;
+            for (int i = 0; i < 1000; i++) {
+                if (quiche_conn_stream_send(conn, 4 * i + 1, send_buf.data(),  to_send, false) < 0) {
+                    // throw std::runtime_error("Could not send data via stream.");<< s
+                    if (DEBUG) std::cout << "Could not send packet via stream" <<  std::endl;
+                    used_streams--;
+                }
             }
+            std::cout << "to_send: " << to_send << "\n";
+            std::cout << "used streams: " << used_streams << "\n";
         }
 
         return true;

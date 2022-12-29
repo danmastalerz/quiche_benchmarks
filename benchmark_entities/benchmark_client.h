@@ -15,11 +15,12 @@
 #include <cstring>
 #include <chrono>
 
+#define VLEN 1000
 #define DEBUG false
 
 #define LOCAL_CONN_ID_LEN 16
-#define MAX_DATAGRAM_SIZE 65000
-#define MAX_UDP_DATAGRAM_SIZE 65000
+#define MAX_DATAGRAM_SIZE 1350
+#define MAX_UDP_DATAGRAM_SIZE 1350
 #define MAX_TOKEN_LEN \
     sizeof("quiche") - 1 + \
     sizeof(struct sockaddr_storage) + \
@@ -44,10 +45,10 @@ namespace benchmark {
         size_t received_bytes;
         size_t received_bytes_between_timestamps;
         std::chrono::time_point<std::chrono::high_resolution_clock> start_timestamp{};
-        uint8_t bufs[10][65535]{};
-        ssize_t msg_lens[10]{};
-        struct iovec vecs[10]{};
-        struct mmsghdr msgs[10]{};
+        uint8_t bufs[VLEN][MAX_DATAGRAM_SIZE]{};
+        ssize_t msg_lens[VLEN]{};
+        struct iovec vecs[VLEN]{};
+        struct mmsghdr msgs[VLEN]{};
 
         bool wait_for_events();
         void process_packet();
@@ -103,7 +104,7 @@ namespace benchmark {
                 .events = POLLIN
         };
 
-        for (int i = 0; i < 10; i++) {
+        for (int i = 0; i < VLEN; i++) {
             vecs[i].iov_base = bufs[i];
             vecs[i].iov_len = MAX_DATAGRAM_SIZE;
             msgs[i].msg_hdr.msg_iov = &vecs[i];
@@ -132,8 +133,8 @@ namespace benchmark {
         quiche_config_set_initial_max_streams_uni(config, 1000);
         quiche_config_set_disable_active_migration(config, true);
         quiche_config_set_cc_algorithm(config, QUICHE_CC_RENO);
-        quiche_config_set_max_stream_window(config, MAX_DATAGRAM_SIZE);
-        quiche_config_set_max_connection_window(config, MAX_DATAGRAM_SIZE);
+        quiche_config_set_max_stream_window(config, 65000);
+        quiche_config_set_max_connection_window(config, 65000);
     }
 
     /*

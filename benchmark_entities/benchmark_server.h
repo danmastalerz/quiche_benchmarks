@@ -13,6 +13,8 @@
 #include <sys/poll.h>
 #include <cstring>
 #include <csignal>
+#include <thread>
+#include <chrono>
 
 #define DEBUG false
 
@@ -103,6 +105,7 @@ namespace benchmark {
         if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
             throw std::runtime_error("Could not set socket_fd to reusable.");
         }
+
 
         // Create pollfd structure
         poll_register = {
@@ -209,7 +212,7 @@ namespace benchmark {
     void benchmark_server::send_out_packets() {
         if (DEBUG) std::cout << "In send_out_packets\n";
         quiche_send_info send_info;
-
+        int packets = 0;
         // While there is something to send - then send.
         while(true) {
             ssize_t written = quiche_conn_send(conn, send_buf.data(), send_buf.size(), &send_info);
@@ -221,13 +224,34 @@ namespace benchmark {
             if (written < 0) {
                 throw std::runtime_error("Could not create packet to send.");
             }
+            packets++;
+
+
+
+            auto timespec = send_info.at;
+            struct timespec diff{};
+            struct timespec now{};
+            clock_gettime(CLOCK_MONOTONIC, &now);
+
+            // Calculate difference between timespec and now
+            diff.tv_sec = timespec.tv_sec - now.tv_sec;
+            diff.tv_nsec = timespec.tv_nsec - now.tv_nsec;
+
+            // Convert to chrono
+            auto sleep_duration = std::chrono::seconds(diff.tv_sec) + std::chrono::nanoseconds(diff.tv_nsec);
+
+            // Sleep
+            std::this_thread::sleep_for(sleep_duration);
 
             ssize_t sent = sendto(socket_fd, send_buf.data(), written, 0, (struct sockaddr *) &send_info.to, send_info.to_len);
             if (DEBUG) std::cout << "Sent " << sent << " bytes.\n";
             if (sent != written) {
                 throw std::runtime_error("Could not send packet.");
             }
+            std::cout << "Just sent " << sent << " bytes.\n";
         }
+
+        std::cout << "Sent " << packets << " packets\n";
 
         current_timeout = (int) quiche_conn_timeout_as_millis(conn);
         if (DEBUG) std::cout << "Out of send_out_packets\n";
@@ -276,6 +300,10 @@ namespace benchmark {
                 if (written < 0) {
                     throw std::runtime_error("Could not write version negotiation packet.");
                 }
+
+                // Calculate duration to wait until sending.
+
+
 
                 // We immediately send this packet.
                 ssize_t sent = sendto(socket_fd, send_buf.data(), written, 0,
@@ -347,22 +375,36 @@ namespace benchmark {
             throw std::runtime_error("Couldn't process QUIC packets.");
         }
 
+        int streams = 1000;
+        int used_streams = streams;
+
+        quiche_conn_stream_send(conn, 4 * 0 + 1, (uint8_t *) "x", 1, false);
+        auto to_send = quiche_conn_stream_capacity(conn, 4 * 0 + 1) / streams;
+        if (to_send > 0) {
+            std::cout << "About to send " << to_send << " bytes in each stream.\n";
+        }
+
+
         // If connection established, send data.
-        if (quiche_conn_is_established(conn)) {
-            quiche_conn_stream_send(conn, 1, (uint8_t *) "x", 1, false);
-            if (DEBUG) std::cout << "About to send data via stream\n";
-            auto to_send = quiche_conn_stream_capacity(conn, 1);
-            if (to_send > 60000) {
-                to_send = 60000;
-            }
-            if (to_send < 0) {
-                return true;
-            }
-            if (quiche_conn_stream_send(conn, 1, send_buf.data(),  to_send, false) < 0) {
-                // throw std::runtime_error("Could not send data via stream.");<< s
-                if (DEBUG) std::cout << "Could not send packet via stream" <<  std::endl;
+        for (int i = 0; i < streams; i++) {
+            if (quiche_conn_is_established(conn)) {
+
+                if (DEBUG) std::cout << "About to send data via stream\n";
+                if (to_send > 60000) {
+                    to_send = 60000;
+                }
+                if (to_send <= 0) {
+                    return true;
+                    used_streams--;
+                }
+                if (quiche_conn_stream_send(conn, 1, send_buf.data(),  to_send, false) < 0) {
+                    // throw std::runtime_error("Could not send data via stream.");<< s
+                    if (DEBUG) std::cout << "Could not send packet via stream" <<  std::endl;
+                    used_streams--;
+                }
             }
         }
+        std::cout << "Used streams: " << used_streams << "\n";
 
         return true;
     }

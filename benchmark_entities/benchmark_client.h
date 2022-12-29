@@ -44,6 +44,10 @@ namespace benchmark {
         size_t received_bytes;
         size_t received_bytes_between_timestamps;
         std::chrono::time_point<std::chrono::high_resolution_clock> start_timestamp{};
+        uint8_t bufs[10][65535]{};
+        ssize_t msg_lens[10]{};
+        struct iovec vecs[10]{};
+        struct mmsghdr msgs[10]{};
 
         bool wait_for_events();
         void process_packet();
@@ -64,7 +68,7 @@ namespace benchmark {
     send_buf(MAX_UDP_DATAGRAM_SIZE),
     local_addr_len(sizeof(sockaddr_storage)),
     received_bytes(0),
-    received_bytes_between_timestamps(0){
+    received_bytes_between_timestamps(0) {
         /*
          * UDP RELATED STUFF
          */
@@ -98,6 +102,13 @@ namespace benchmark {
                 .fd = socket_fd,
                 .events = POLLIN
         };
+
+        for (int i = 0; i < 10; i++) {
+            vecs[i].iov_base = bufs[i];
+            vecs[i].iov_len = MAX_DATAGRAM_SIZE;
+            msgs[i].msg_hdr.msg_iov = &vecs[i];
+            msgs[i].msg_hdr.msg_iovlen = 1;
+        }
 
         /*
         * QUICHE RELATED STUFF
@@ -179,18 +190,19 @@ namespace benchmark {
         // So - we need to receive incoming packet.
         // Here, opposite to the server, we receive many packets, instead of just one.
         // TODO: investigate what's up with that
-        while(true) {
-            sockaddr_storage peer{};
-            socklen_t peer_len = sizeof(sockaddr_storage);
-            memset(&peer, 0, peer_len);
 
-            recv_len = recvfrom(socket_fd, recv_buf.data(), recv_buf.size(), 0,
-                                (struct sockaddr *) &peer, &peer_len);
-            if (DEBUG) std::cout << "Received " << recv_len << " bytes." << std::endl;
-            if (recv_len < 0) {
-                if (DEBUG) std::cout << "Warning: recv_len = " << recv_len <<  " < 0\n";
-                break;
-            }
+        sockaddr_storage peer{};
+        socklen_t peer_len = 16;
+        memset(&peer, 0, peer_len);
+
+
+        // Initialize msgs related stuff
+        msgs->msg_hdr.msg_name = &peer;
+        msgs->msg_hdr.msg_namelen = peer_len;
+
+        // use recvmmsg
+        int packets = recvmmsg(socket_fd, msgs, 10, 0, nullptr);
+        for(int i = 0; i < packets; i++) {
 
             // Feed received UDP data into quiche.
             quiche_recv_info recv_info = {
@@ -199,7 +211,7 @@ namespace benchmark {
                     (struct sockaddr *) &local,
                     local_addr_len
             };
-            ssize_t done = quiche_conn_recv(conn, recv_buf.data(), recv_len, &recv_info);
+            ssize_t done = quiche_conn_recv(conn, bufs[i],  msgs[i].msg_len, &recv_info);
             if (done < 0) {
                 throw std::runtime_error("Couldn't process QUIC packets.");
             }

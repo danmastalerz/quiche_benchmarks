@@ -42,6 +42,10 @@ namespace benchmark {
         struct pollfd poll_register{};
         size_t received_bytes;
         bool connection_created;
+        uint8_t bufs[10][65535]{};
+        ssize_t msg_lens[10]{};
+        struct iovec vecs[10]{};
+        struct mmsghdr msgs[10]{};
 
         bool wait_for_event();
         bool process_packet();
@@ -207,12 +211,11 @@ namespace benchmark {
     }
 
     void benchmark_server::send_out_packets() {
-        if (DEBUG) std::cout << "In send_out_packets\n";
-        quiche_send_info send_info;
+        quiche_send_info quiche_send_info;
+        int packets = 0;
 
-        // While there is something to send - then send.
         while(true) {
-            ssize_t written = quiche_conn_send(conn, send_buf.data(), send_buf.size(), &send_info);
+            ssize_t written = quiche_conn_send(conn, bufs[packets], MAX_DATAGRAM_SIZE, &quiche_send_info);
 
             if (written == QUICHE_ERR_DONE) {
                 break;
@@ -221,16 +224,22 @@ namespace benchmark {
             if (written < 0) {
                 throw std::runtime_error("Could not create packet to send.");
             }
-
-            ssize_t sent = sendto(socket_fd, send_buf.data(), written, 0, (struct sockaddr *) &send_info.to, send_info.to_len);
-            if (DEBUG) std::cout << "Sent " << sent << " bytes.\n";
-            if (sent != written) {
-                throw std::runtime_error("Could not send packet.");
-            }
+            msg_lens[packets] = written;
+            packets++;
         }
 
-        current_timeout = (int) quiche_conn_timeout_as_millis(conn);
-        if (DEBUG) std::cout << "Out of send_out_packets\n";
+        // init msgs
+        for (int i = 0; i < packets; i++) {
+            vecs[i].iov_base = bufs[i];
+            vecs[i].iov_len = msg_lens[i];
+            msgs[i].msg_hdr.msg_iov = &vecs[i];
+            msgs[i].msg_hdr.msg_iovlen = 1;
+            msgs[i].msg_hdr.msg_name = &quiche_send_info.to;
+            msgs[i].msg_hdr.msg_namelen = quiche_send_info.to_len;
+        }
+
+        // sendmmsg
+        int sent = sendmmsg(socket_fd, msgs, packets, 0);
     }
 
     // Return false if the caller should continue to the next iteration of the loop.
@@ -348,7 +357,7 @@ namespace benchmark {
         }
 
         // If connection established, send data.
-        if (quiche_conn_is_established(conn)) {
+        if (conn != nullptr && quiche_conn_is_established(conn)) {
             quiche_conn_stream_send(conn, 1, (uint8_t *) "x", 1, false);
             if (DEBUG) std::cout << "About to send data via stream\n";
             auto to_send = quiche_conn_stream_capacity(conn, 1);

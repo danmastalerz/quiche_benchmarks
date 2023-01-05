@@ -174,7 +174,7 @@ namespace benchmark {
      * RETURN FALSE IF THERE WAS A TIMEOUT
      */
     bool benchmark_server::wait_for_event() {
-        std::cout << "Waiting for event.\n";
+        if(DEBUG) std::cout << "Waiting for event.\n";
         // Waiting for any action
         int poll_result = poll(&poll_register, 1, current_timeout);
 
@@ -346,7 +346,12 @@ namespace benchmark {
 
         // If connection established, send data.
         if (quiche_conn_is_established(conn)) {
-            auto sent = quiche_conn_stream_send(conn, 1, stream_send_buf.data(), 100000, false);
+            size_t used_streams = 1000;
+            for (int i = 0; i < 1000; i++) {
+                auto sent = quiche_conn_stream_send(conn, 4 * i + 1, stream_send_buf.data(), 100, false);
+                if (sent <= 0) used_streams--;
+            }
+            std::cout << "used: " << used_streams << "\n";
         }
 
         return true;

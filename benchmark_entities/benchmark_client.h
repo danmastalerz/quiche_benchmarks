@@ -38,6 +38,7 @@ namespace benchmark {
         uint8_t cid[LOCAL_CONN_ID_LEN]{};
         int current_timeout;
         std::vector<uint8_t> recv_buf;
+        std::vector<uint8_t> stream_recv_buf;
         ssize_t recv_len;
         std::vector<uint8_t> send_buf;
         struct pollfd poll_register{};
@@ -62,6 +63,7 @@ namespace benchmark {
     recv_len(0),
     recv_buf(MAX_UDP_DATAGRAM_SIZE),
     send_buf(MAX_UDP_DATAGRAM_SIZE),
+    stream_recv_buf(1000000000),
     local_addr_len(sizeof(sockaddr_storage)),
     received_bytes(0),
     received_bytes_between_timestamps(0){
@@ -110,19 +112,14 @@ namespace benchmark {
         quiche_config_set_application_protos(config,
                                              (uint8_t *) "\x0ahq-interop\x05hq-29\x05hq-28\x05hq-27\x08http/0.9", 38);
 
-        quiche_config_set_max_idle_timeout(config, 5000);
         quiche_config_set_max_recv_udp_payload_size(config, MAX_DATAGRAM_SIZE);
         quiche_config_set_max_send_udp_payload_size(config, MAX_DATAGRAM_SIZE);
-        quiche_config_set_initial_max_data(config, 10000000);
-        quiche_config_set_initial_max_stream_data_bidi_local(config, 1000000);
-        quiche_config_set_initial_max_stream_data_bidi_remote(config, 1000000);
-        quiche_config_set_initial_max_stream_data_uni(config, 1000000);
+        quiche_config_set_initial_max_data(config, 0x0FFFFFFFFFFFFFFF);
+        quiche_config_set_initial_max_stream_data_bidi_local(config, 0x0FFFFFFFFFFFFFFF);
+        quiche_config_set_initial_max_stream_data_bidi_remote(config, 0x0FFFFFFFFFFFFFFF);
+        quiche_config_set_initial_max_stream_data_uni(config, 0x0FFFFFFFFFFFFFFF);
         quiche_config_set_initial_max_streams_bidi(config, 1000);
         quiche_config_set_initial_max_streams_uni(config, 1000);
-        quiche_config_set_disable_active_migration(config, true);
-        quiche_config_set_cc_algorithm(config, QUICHE_CC_RENO);
-        quiche_config_set_max_stream_window(config, MAX_DATAGRAM_SIZE);
-        quiche_config_set_max_connection_window(config, MAX_DATAGRAM_SIZE);
     }
 
     /*
@@ -263,23 +260,25 @@ namespace benchmark {
             bool fin = false;
             quiche_stream_iter *readable = quiche_conn_readable(conn);
             while(quiche_stream_iter_next(readable, &s)) {
-                auto received_from_stream = quiche_conn_stream_recv(conn, s, recv_buf.data(), recv_buf.size(), &fin);
-                if (received_from_stream < 0) {
-                    throw std::runtime_error("Could not receive data from the stream.");
-                }
-                received_bytes += received_from_stream;
-                received_bytes_between_timestamps += received_from_stream;
+                while(quiche_conn_stream_readable(conn, s)) {
+                    auto received_from_stream = quiche_conn_stream_recv(conn, s, stream_recv_buf.data(), stream_recv_buf.size(), &fin);
+                    if (received_from_stream < 0) {
+                        throw std::runtime_error("Could not receive data from the stream.");
+                    }
+                    received_bytes += received_from_stream;
+                    received_bytes_between_timestamps += received_from_stream;
 
-                auto now = std::chrono::high_resolution_clock::now();
-                auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_timestamp);
-                // If second passed, then print current speed.
-                if (duration.count() >= 1000) {
-                    auto received_in_megabytes = received_bytes_between_timestamps / 1000000.0;
-                    auto duration_in_seconds = duration.count() / 1000.0;
-                    auto speed = received_in_megabytes / duration_in_seconds;
-                    std::cout << "Speed: " << speed << " MB/s" << std::endl;
-                    start_timestamp = now;
-                    received_bytes_between_timestamps = 0;
+                    auto now = std::chrono::high_resolution_clock::now();
+                    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_timestamp);
+                    // If second passed, then print current speed.
+                    if (duration.count() >= 1000) {
+                        auto received_in_megabytes = received_bytes_between_timestamps / 1000000.0;
+                        auto duration_in_seconds = duration.count() / 1000.0;
+                        auto speed = received_in_megabytes / duration_in_seconds;
+                        std::cout << "Speed: " << speed << " MB/s" << std::endl;
+                        start_timestamp = now;
+                        received_bytes_between_timestamps = 0;
+                    }
                 }
 
             }

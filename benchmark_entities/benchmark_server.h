@@ -42,6 +42,7 @@ namespace benchmark {
         struct pollfd poll_register{};
         size_t received_bytes;
         bool connection_created;
+        std::vector<uint8_t> stream_send_buf;
 
         bool wait_for_event();
         bool process_packet();
@@ -64,6 +65,7 @@ namespace benchmark {
             current_timeout(-1),
             recv_buf(MAX_UDP_DATAGRAM_SIZE),
             send_buf(MAX_UDP_DATAGRAM_SIZE),
+            stream_send_buf(1000000000),
             peer_addr_len(sizeof(struct sockaddr_storage)),
             recv_len(0),
             received_bytes(0),
@@ -124,19 +126,14 @@ namespace benchmark {
         quiche_config_set_application_protos(config,
                                              (uint8_t *) "\x0ahq-interop\x05hq-29\x05hq-28\x05hq-27\x08http/0.9", 38);
 
-        quiche_config_set_max_idle_timeout(config, 5000);
         quiche_config_set_max_recv_udp_payload_size(config, MAX_DATAGRAM_SIZE);
         quiche_config_set_max_send_udp_payload_size(config, MAX_DATAGRAM_SIZE);
-        quiche_config_set_initial_max_data(config, 10000000);
-        quiche_config_set_initial_max_stream_data_bidi_local(config, 1000000);
-        quiche_config_set_initial_max_stream_data_bidi_remote(config, 1000000);
-        quiche_config_set_initial_max_stream_data_uni(config, 1000000);
+        quiche_config_set_initial_max_data(config, 0x0FFFFFFFFFFFFFFF);
+        quiche_config_set_initial_max_stream_data_bidi_local(config, 0x0FFFFFFFFFFFFFFF);
+        quiche_config_set_initial_max_stream_data_bidi_remote(config, 0x0FFFFFFFFFFFFFFF);
+        quiche_config_set_initial_max_stream_data_uni(config, 0x0FFFFFFFFFFFFFFF);
         quiche_config_set_initial_max_streams_bidi(config, 1000);
         quiche_config_set_initial_max_streams_uni(config, 1000);
-        quiche_config_set_disable_active_migration(config, true);
-        quiche_config_set_cc_algorithm(config, QUICHE_CC_RENO);
-        quiche_config_set_max_stream_window(config, MAX_DATAGRAM_SIZE);
-        quiche_config_set_max_connection_window(config, MAX_DATAGRAM_SIZE);
     }
     /*
      * MAIN BENCHMARK LOOP
@@ -177,7 +174,7 @@ namespace benchmark {
      * RETURN FALSE IF THERE WAS A TIMEOUT
      */
     bool benchmark_server::wait_for_event() {
-
+        std::cout << "Waiting for event.\n";
         // Waiting for any action
         int poll_result = poll(&poll_register, 1, current_timeout);
 
@@ -349,19 +346,7 @@ namespace benchmark {
 
         // If connection established, send data.
         if (quiche_conn_is_established(conn)) {
-            quiche_conn_stream_send(conn, 1, (uint8_t *) "x", 1, false);
-            if (DEBUG) std::cout << "About to send data via stream\n";
-            auto to_send = quiche_conn_stream_capacity(conn, 1);
-            if (to_send > 60000) {
-                to_send = 60000;
-            }
-            if (to_send < 0) {
-                return true;
-            }
-            if (quiche_conn_stream_send(conn, 1, send_buf.data(),  to_send, false) < 0) {
-                // throw std::runtime_error("Could not send data via stream.");<< s
-                if (DEBUG) std::cout << "Could not send packet via stream" <<  std::endl;
-            }
+            auto sent = quiche_conn_stream_send(conn, 1, stream_send_buf.data(), 100000, false);
         }
 
         return true;
